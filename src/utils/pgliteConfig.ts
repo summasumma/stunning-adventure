@@ -32,6 +32,12 @@ let connectionCheckInterval: NodeJS.Timeout;
 
 // Track initialization state in localStorage for multi-tab consistency
 const DB_INIT_KEY = "patient_db_initialized";
+const SYNC_VERSION_KEY = "patient_db_sync_version";
+
+// Initialize sync version if not exists
+if (!localStorage.getItem(SYNC_VERSION_KEY)) {
+  localStorage.setItem(SYNC_VERSION_KEY, '0');
+}
 
 async function checkConnection() {
   if (!dbInstance) return false;
@@ -104,6 +110,7 @@ async function initializeDatabase(config: Partial<DatabaseConfig> = {}): Promise
         type: "tab_online",
         timestamp: Date.now(),
         tabId: generateTabId(),
+        syncVersion: localStorage.getItem(SYNC_VERSION_KEY)
       });
     } catch (channelError) {
       console.error("Failed to create broadcast channel:", channelError);
@@ -142,7 +149,7 @@ function generateTabId(): string {
 
 // Handle localStorage events (fallback sync mechanism)
 function handleStorageEvent(event: StorageEvent) {
-  if (event.key === 'db_change_notification') {
+  if (event.key === SYNC_VERSION_KEY || event.key === 'db_change_notification') {
     console.log("Received database change via localStorage");
     // Force a refresh of the data
     window.dispatchEvent(new CustomEvent('force-data-refresh'));
@@ -316,6 +323,9 @@ export async function executeQuery<T = any>(
           const result = await db.query(query, params);
           
           if (isModifyingQuery(query)) {
+            // Increment sync version for all tabs
+            const currentVersion = parseInt(localStorage.getItem(SYNC_VERSION_KEY) || '0');
+            localStorage.setItem(SYNC_VERSION_KEY, (currentVersion + 1).toString());
             broadcastDatabaseChange(query, config?.broadcastTable);
           }
           
@@ -352,6 +362,7 @@ function broadcastDatabaseChange(query: string, affectedTable?: string): void {
     timestamp: Date.now(),
     origin: window.location.href,
     tabId: generateTabId(),
+    syncVersion: localStorage.getItem(SYNC_VERSION_KEY)
   };
   
   try {
@@ -396,16 +407,21 @@ function getQueryAction(query: string): string {
  * Listen for database updates with improved reliability
  */
 export function onDatabaseUpdate(
-  callback: (event: { type: string; action: string; query: string; timestamp: number }) => void
+  callback: (event: { type: string; action: string; query: string; timestamp: number; syncVersion?: string }) => void
 ): () => void {
   const listeners: Array<() => void> = [];
+  let currentSyncVersion = localStorage.getItem(SYNC_VERSION_KEY);
   
   // Method 1: Listen via BroadcastChannel
   if (dbChannel) {
     const channelListener = (event: MessageEvent) => {
       if (event.data && (event.data.type === "data_updated" || event.data.type === "tab_online")) {
-        console.log("Received broadcast channel message:", event.data);
-        callback(event.data);
+        // Check if this is a new version we haven't processed
+        if (event.data.syncVersion !== currentSyncVersion) {
+          console.log("Received broadcast channel message:", event.data);
+          currentSyncVersion = event.data.syncVersion;
+          callback(event.data);
+        }
       }
     };
     
@@ -415,11 +431,14 @@ export function onDatabaseUpdate(
   
   // Method 2: Listen via storage events (works across tabs)
   const storageListener = (event: StorageEvent) => {
-    if (event.key === 'db_change_notification' && event.newValue) {
+    if ((event.key === SYNC_VERSION_KEY || event.key === 'db_change_notification') && event.newValue) {
       try {
         const data = JSON.parse(event.newValue);
-        console.log("Received localStorage change notification:", data);
-        callback(data);
+        if (data.syncVersion !== currentSyncVersion) {
+          console.log("Received localStorage change notification:", data);
+          currentSyncVersion = data.syncVersion;
+          callback(data);
+        }
       } catch (error) {
         console.error("Error parsing storage event data:", error);
       }
@@ -433,8 +452,12 @@ export function onDatabaseUpdate(
   const customEventListener = (event: Event) => {
     const customEvent = event as CustomEvent;
     if (customEvent.detail) {
-      console.log("Received custom event:", customEvent.detail);
-      callback(customEvent.detail);
+      const data = customEvent.detail;
+      if (data.syncVersion !== currentSyncVersion) {
+        console.log("Received custom event:", data);
+        currentSyncVersion = data.syncVersion;
+        callback(data);
+      }
     }
   };
   
@@ -448,7 +471,8 @@ export function onDatabaseUpdate(
       type: "data_updated",
       action: "refresh",
       query: "",
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      syncVersion: localStorage.getItem(SYNC_VERSION_KEY)
     });
   };
   
