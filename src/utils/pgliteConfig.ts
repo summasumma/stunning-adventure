@@ -177,13 +177,9 @@ export async function initializePatientTable() {
         medical_history TEXT,
         insurance_provider TEXT,
         insurance_id TEXT,
-        emergency_contact TEXT
+        emergency_contact TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
-    `);
-
-    // Add created_at column if it doesn't exist
-    await executeQuery(`
-      ALTER TABLE patients ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     `);
     
     // Verify table exists by querying structure
@@ -201,7 +197,7 @@ export async function initializePatientTable() {
     return true;
   } catch (error) {
     console.error("Error initializing patients table:", error);
-    return false;
+    throw error;
   }
 }
 
